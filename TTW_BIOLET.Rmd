@@ -1,0 +1,1549 @@
+---
+title: "TTW_BIOLET"
+author: "Claire O'Connell"
+date: "2025-05-24"
+output: html_document
+---
+
+# load packages and data
+```{r}
+# load packages
+library(tidyverse)
+library(brms)
+library(cowplot)
+library(ggdist)
+library(tidybayes)
+library(ggplot2)
+library(egg)
+
+# get observed data
+raw <- read.csv("2021_TTW.csv") 
+
+# list of all possible undirected dyads
+dyads <- 
+  read.csv("2021_preperturbation dyad list.csv") %>% 
+  select(undir.dyad, new.dyad) %>% 
+  distinct()
+
+# tidy data and get presence of behaviors every 5 minutes
+actual <- 
+  raw %>% 
+  as_tibble() %>% 
+  # filter one behavior every 5 minutes per r/ship. 
+  select(dyad= undir.dyad, sample = round.dt, behavior, n) %>% 
+  distinct() 
+    # check
+    actual %>% group_by(dyad, behavior, sample) %>% 
+      summarize(n =n()) %>% ungroup() %>% 
+      distinct(n)
+
+# get possible behaviors every 5 minutes
+possible <- 
+  # we assume any observed dyad could have been seen interacting in any time sample doing any behavior
+  crossing(dyad= actual$dyad, sample= actual$sample, behavior= actual$behavior, n=0) 
+
+# combine actual and possible observations
+d <- 
+  rbind(actual, possible) %>% 
+  group_by(dyad, sample, behavior) %>% 
+  summarize(n= sum(n)) %>% 
+  ungroup() %>% 
+  # label new dyads
+  mutate(new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)])
+
+
+# This inherently controls for sampling effort.
+```
+# sankey plots
+```{r}
+library(networkD3)
+#install.packages("webshot")
+library(webshot)
+
+
+observed.data <- actual %>% 
+  arrange(sample) %>% 
+  group_by(dyad, behavior) %>% 
+  summarize(first.time = min(sample), .groups= 'drop') %>% 
+  mutate(new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)])
+
+
+# create List: 1 column with list of all behaviors used by each dyad
+tidy.flow_g <- observed.data %>% #RTS.obs %>%
+              arrange(first.time) %>%
+               # classify behaviors as A, B, or C
+              mutate(behav= case_when(
+                behavior == "NN" ~ "Low",  #"Proximity",
+                behavior == "s2s" ~ "Moderate", # "ST/Apreen/BT",
+                behavior == "allop" ~ "Moderate" ,#"ST/Apreen/BT",
+                behavior == "beak_touch" ~ "Moderate", #"ST/Apreen/BT",
+                behavior == "alloF" ~ "High", #"Afeed/COP",
+                behavior == "cop" ~ "High", #"Afeed/COP", 
+                TRUE ~ "error")) %>% 
+              group_by(new.dyad, dyad) %>%
+              distinct(dyad, behav) %>%
+              summarise(List = str_c(behav, collapse = ",")) %>% ungroup()
+
+
+ # create list of dyads
+dyads_g <- tidy.flow_g$dyad
+
+# split List to matrix
+tidy.flow.split_g <- unlist(stringr::str_split_fixed(tidy.flow_g$List, ",",3))# 3 possible behaviors
+
+# convert matrix to data frame
+Flow_g <- as.data.frame(tidy.flow.split_g)
+      unique(Flow_g$V1)
+       unique(Flow_g$V2)
+      unique(Flow_g$V3)
+
+# rename columns
+colnames(Flow_g) <- c("First", "Second", "Third")
+# add dyads
+Flow_g$undir.dyad <- dyads_g
+        unique(Flow_g$First)
+        unique(Flow_g$Third)
+
+# create list of behaviors
+behaviors_g <- c("Low","Moderate", "High") #c("Proximity","S2S/Apreen/BKT", "Afeed/COP")
+behaviors_g <- as.data.frame(behaviors_g) # convert to df
+
+# set numeric values 
+Flow_g$firstID <- match(Flow_g$First, behaviors_g$behaviors)-1 
+Flow_g$secID <- match(Flow_g$Second, behaviors_g$behaviors)-1 
+Flow_g$thirdID <- match(Flow_g$Third, behaviors_g$behaviors)-1 
+
+# create dyad list with attributes of interest
+dlist <- observed.data %>% 
+            select(dyad, new.dyad) %>%
+            distinct() %>% 
+            rename(undir.dyad = dyad)
+
+# merge
+all.data_g <- merge(Flow_g, dlist, by = "undir.dyad") %>% distinct()
+                
+
+
+
+
+
+
+#### stranger
+links.df_g <- all.data_g %>%
+ #group_by(undir.dyad) %>%
+  filter(new.dyad ==T) %>% 
+  mutate(row = row_number()) %>%
+  pivot_longer(cols = c("First", "Second", "Third"),
+                          names_to = "order",
+                          values_to = "behavior") %>%
+  #filter(!behavior == "") %>% 
+  select(undir.dyad, row, order, behavior, new.dyad)
+
+    length(unique(links.df_g$undir.dyad)) #175 interacted 
+   
+  links.df_g %>% 
+      filter(behavior != "") %>%
+      group_by(order) %>% 
+      summarize(n = n_distinct(undir.dyad)) %>% 
+      ungroup() 
+  
+   links.df_g %>% 
+      filter(behavior == "High" | behavior == "Moderate") %>%
+      #group_by(order) %>% 
+      distinct(undir.dyad)
+
+
+links.df1_g <- links.df_g %>%
+  mutate(order = match(order, names(all.data_g))) %>%   
+  group_by(row, undir.dyad) %>% 
+  mutate(target = lead(behavior, order_by = order)) %>% 
+  filter(!is.na(target)) %>%                          
+  ungroup() 
+
+    length(unique(links.df1_g$undir.dyad)) #42 #58
+### summary of the unfamiliar dyads that were observed progressing 
+    links.df_g %>% 
+      filter(!behavior == "") %>% 
+      group_by(order) %>% 
+      summarize(n = n_distinct(undir.dyad)) %>% 
+      ungroup() 
+### summary of the unfamiliar dyads using each investment type of behavior
+    links.df_g %>% 
+      group_by(behavior) %>% 
+      summarize(n = n_distinct(undir.dyad)) %>% 
+      ungroup() %>% 
+      mutate(percent = (n/179)*100)
+
+# set order
+behaviors_g
+
+links.df2_g <- links.df1_g %>% 
+  arrange(factor(behavior, levels = behaviors_g),
+          factor(target, levels = behaviors_g)) %>%
+  mutate(behavior = paste0(behavior, '_', order)) %>%
+  mutate(target = paste0(target, '_', order + 1)) %>% # target is the same as the 
+  select(undir.dyad, row, order, behavior, target) # behavior for the next column 
+
+# create nodes df
+nodes.df_g <- data.frame(name = unique(c(links.df2_g$behavior, links.df2_g$target)))
+nodes.df_g$label <- sub('_[0-9]*$', '', nodes.df_g$name) # what we use as NodeID
+nodes.df_g <- nodes.df_g %>% arrange(factor(label, levels = behaviors_g)) 
+
+# prepare color scale: all strangers; shades of green
+#my_color_g <- 'd3.scaleOrdinal() .domain("Late Behaviors","Intermediate Behaviors", "Early Behaviors"]) .range(["#4E6A08", "#668B0B","#80AD12"])'
+
+# prepare color scale: I give one specific color for each node.
+#my_color_g <- 'd3.scaleOrdinal() .domain(["NN","S2S", "Apreen", "BKT", "Afeed", "COP"]) .range(["#80ad12", "#59790c","#4c670a", "#8fb1a5", "#a8c48b","#e78502"])'
+my_color_g <- 'd3.scaleOrdinal() .domain(["NN","S2S", "Apreen", "BKT", "Afeed", "COP"]) .range(["#626d95", "#ff9800","#f35b04", "#626d95", "#ff9800","#f35b04"])'
+
+links.df2_g$behavior_id <- match(links.df2_g$behavior, nodes.df_g$name) - 1 # Create source_id column
+links.df2_g$target_id <- match(links.df2_g$target, nodes.df_g$name) - 1 # Create target_id column
+links.df2_g$value <- 1                                             # Assign link values
+
+links.df2_g.summ  <- links.df2_g %>% # use this summary data frame in the plot for the nice smooth transitions in plot; otherwise use links.df2_g for individual tranisitions between nodes
+  group_by(order, behavior, target, behavior_id, target_id) %>% 
+  summarize(value = n()) %>% 
+  ungroup()
+
+(sn_g <- sankeyNetwork(Links = links.df2_g,     
+              Nodes = nodes.df_g,     
+              Source = 'behavior_id', 
+              Target = 'target_id', 
+              Value = 'value',     
+              NodeID = 'label',  
+              NodeGroup= "label",
+              fontSize = 20, 
+              nodeWidth = 34,
+              height = 400,
+              width = 600,
+              fontFamily = "sans-serif",
+              iterations = 0,  # prevent diagram layout changes
+              sinksRight=FALSE,
+              colourScale = my_color_g
+              ) 
+  )
+
+
+
+
+
+
+#### familiar
+
+links.df_F <- all.data_g %>%
+ #group_by(undir.dyad) %>%
+  filter(new.dyad == F) %>% 
+  mutate(row = row_number()) %>%
+  pivot_longer(cols = c("First", "Second", "Third"),
+                          names_to = "order",
+                          values_to = "behavior") %>%
+  #filter(!behavior == "") %>% 
+  select(undir.dyad, row, order, behavior, new.dyad)
+
+    length(unique(links.df_F$undir.dyad)) #52 interacted 
+### summary of the familiar dyads that were observed progressing 
+    links.df_F %>% 
+      filter(!behavior == "") %>% 
+      group_by(order) %>% 
+      summarize(n = n_distinct(undir.dyad)) %>% 
+      ungroup() 
+### summary of the familiar dyads using each investment type of behavior
+    links.df_F %>% 
+      group_by(behavior) %>% 
+      summarize(n = n_distinct(undir.dyad)) %>% 
+      ungroup() %>% 
+      mutate(percent = (n/52)*100)
+
+links.df1_F <- links.df_F %>%
+  mutate(order = match(order, names(all.data_g))) %>%   
+  group_by(row, undir.dyad) %>% 
+  mutate(target = lead(behavior, order_by = order)) %>% 
+  filter(!is.na(target)) %>%                          
+  ungroup() 
+
+    length(unique(links.df1_F$undir.dyad))
+
+# set order
+behaviors_g
+
+links.df2_F <- links.df1_F %>% 
+  arrange(factor(behavior, levels = behaviors_g),
+          factor(target, levels = behaviors_g)) %>%
+  mutate(behavior = paste0(behavior, '_', order)) %>%
+  mutate(target = paste0(target, '_', order + 1)) %>% # target is the same as the 
+  select(undir.dyad, row, order, behavior, target) # behavior for the next column 
+
+# create nodes df
+nodes.df_F <- data.frame(name = unique(c(links.df2_F$behavior, links.df2_F$target)))
+nodes.df_F$label <- sub('_[0-9]*$', '', nodes.df_F$name) # what we use as NodeID
+nodes.df_F <- nodes.df_F %>% arrange(factor(label, levels = behaviors_g)) 
+
+links.df2_F$behavior_id <- match(links.df2_F$behavior, nodes.df_F$name) - 1 # Create source_id column
+links.df2_F$target_id <- match(links.df2_F$target, nodes.df_F$name) - 1 # Create target_id column
+links.df2_F$value <- 1                                             # Assign link values
+
+links.df2_F.summ  <- links.df2_F %>% # use this summary data frame in the plot for the nice smooth transitions in plot; otherwise use links.df2_F for individual tranisitions between nodes
+  group_by(order, behavior, target, behavior_id, target_id) %>% 
+  summarize(value = n()) %>% 
+  ungroup()
+
+(sn_F <- sankeyNetwork(Links = links.df2_F,     
+              Nodes = nodes.df_F,     
+              Source = 'behavior_id', 
+              Target = 'target_id', 
+              Value = 'value',     
+              NodeID = 'label',  
+              NodeGroup= "label",
+              fontSize = 20, 
+              nodeWidth = 34,
+              height = 400,
+              width = 600,
+              fontFamily = "sans-serif",
+              #iterations = 0,  # prevent diagram layout changes
+              sinksRight=FALSE,
+              colourScale = my_color_g
+              ) 
+)
+
+```
+# save grouped stranger and familiar sankeys
+```{r}
+sn_g
+
+sn_F
+
+saveNetwork(sn_g, "sankey_FLstranger.html")
+saveNetwork(sn_F, "sankey_FLfamiliar.html")
+webshot2::webshot("sankey_FLstranger.html", 
+                  "sankey_FLstranger.pdf", vwidth = 1000, vheight = 400, zoom = 2)
+webshot2::webshot("sankey_FLfamiliar.html", 
+                  "sankey_FLfamiliar.pdf", vwidth = 1000, vheight = 400, zoom = 2)
+```
+# plotting common sequences
+```{r}
+# plot list of most common sequences in new dyads
+(plot1 <- 
+    actual %>% 
+   # label new dyads
+    mutate(new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)]) %>% 
+    filter(new.dyad) %>%  
+   # rename behavior
+    mutate(behavior= case_when(
+      behavior=="NN" ~ "proximity",
+      behavior=="alloF" ~ "feed",
+      behavior=="allop" ~ "allopreen",
+      behavior=="beak_touch" ~ "beak touch",
+      behavior=="cop" ~ "copulate",
+      behavior=="s2s" ~ "shoulder touch")) %>% 
+    # get first case of each behavior within each dyad
+    group_by(dyad, new.dyad, behavior) %>% 
+      summarize(first.time = min(sample), .groups= 'drop') %>% 
+      group_by(dyad, new.dyad) %>% 
+      mutate(n=n()) %>% 
+      filter(n>1) %>% 
+      arrange(dyad, first.time) %>%
+      mutate(order= paste0("behav",row_number())) %>% 
+      select(dyad, behavior, order) %>% 
+      pivot_wider(names_from = order, values_from = behavior) %>% 
+      mutate(sequence= 
+               paste(behav1,behav2,behav3,behav4,behav5,behav6,sep= " --> ")) %>% 
+      ungroup() %>% 
+      mutate(sequence = str_remove_all(sequence, pattern = " --> NA")) %>% 
+      group_by(sequence) %>% 
+      summarize(n=n()) %>% 
+      arrange(desc(n)) %>% 
+      slice_max(order_by= n, n=5) %>% 
+      mutate(sequence = fct_reorder(sequence, (n))) %>% 
+   # plot 
+   ggplot(aes(x= sequence, y=n))+
+    geom_col(fill="grey", color= "black")+
+    geom_text(aes(y=n+0.1, label= sequence, hjust=0))+
+    coord_flip()+
+    theme_bw()+
+    ylab("number of dyads")+
+    scale_y_continuous(expand=expansion(), limits= c(0,20))+
+    ggtitle("most common behavioral transitions among strangers")+
+    theme(axis.text.y = element_blank(), 
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank()) 
+ )
+
+# plot list of most common sequences in familiar dyads
+(plot2 <- 
+    actual %>% 
+    # label new dyads
+    mutate(new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)]) %>% 
+    filter(!new.dyad) %>%   
+    mutate(behavior= case_when(
+     behavior=="NN" ~ "proximity",
+      behavior=="alloF" ~ "feed",
+      behavior=="allop" ~ "allopreen",
+      behavior=="beak_touch" ~ "beak touch",
+      behavior=="cop" ~ "copulate",
+      behavior=="s2s" ~ "shoulder touch")) %>%
+    # get first case of each behavior within each dyad
+    group_by(dyad, behavior) %>% 
+    summarize(first.time = min(sample), .groups= 'drop') %>% 
+    group_by(dyad) %>% 
+    mutate(n=n()) %>% 
+    filter(n>1) %>% 
+    arrange(dyad, first.time) %>% 
+    mutate(order= paste0("behav",row_number())) %>% 
+    select(dyad, behavior, order) %>% 
+    pivot_wider(names_from = order, values_from = behavior) %>% 
+    mutate(sequence= paste(behav1, behav2,behav3,behav4,behav5,behav6, sep= " --> ")) %>% 
+    ungroup() %>% 
+    mutate(sequence = str_remove_all(sequence, pattern = " --> NA")) %>% 
+    group_by(sequence) %>% 
+    summarize(n=n()) %>% 
+    arrange(desc(n)) %>% 
+    slice_max(order_by= n, n=5) %>% 
+    mutate(sequence = fct_reorder(sequence, (n))) %>% 
+    ggplot(aes(x= sequence, y=n))+
+    geom_col(fill="grey", color= "black")+
+    geom_text(aes(y=n+0.1, label= sequence, hjust=0))+
+    coord_flip()+
+    theme_bw()+
+    ylab("number of pairs")+
+    scale_y_continuous(expand=expansion(), limits= c(0,20))+
+    ggtitle("most common behavioral transitions in familiar dyads")+
+    theme(axis.text.y = element_blank(), 
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank()))
+
+
+plot1
+plot2
+
+## this code does not work for me
+# combine plots
+#(p <- plot1/plot2)
+
+# save plot
+#ggsave(
+ # "sequence_plots.pdf",
+ # plot = p,
+ # scale = 1,
+ # width = 13,
+ # height = 4,
+ # units = c("in", "cm", "mm", "px"),
+ # dpi = 300)
+
+```
+# Does predicted sequence occur more often in new dyads than familiar ones?
+prediction: new dyads should follow this sequence even more often than familiar dyads.
+
+Bayesian GLMM multi-membership model
+```{r, fig.width = 5}
+# fit Bayesian multi-membership model
+# get data
+d3 <- 
+  d %>% 
+  # get actual events
+  filter(n==1) %>% 
+  # classify behaviors as association or interaction (touch)
+  mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+  # get first case of each behavior within each dyad
+  group_by(new.dyad, dyad, behav) %>% 
+  summarize(first.time = min(sample), .groups= 'drop') %>% 
+  pivot_wider(names_from = behav, values_from = first.time) %>% 
+  mutate(assoc.first = case_when(
+    associate < touch ~ TRUE,
+    associate > touch ~ FALSE,
+    # if first associate and first touch are observed in same 5-min bin this does not support or reject
+    associate == touch ~ NA,
+    is.na(associate) & !is.na(touch) ~ FALSE,
+    !is.na(associate) & is.na(touch) ~ TRUE,
+    TRUE ~ NA)) %>% 
+  separate(dyad, into= c('id1', 'id2')) %>% 
+  select(new.dyad, id1, id2, assoc.first)
+
+
+        d3_plot <- d3 %>% 
+          group_by(new.dyad)  %>% 
+          na.omit() %>% 
+          dplyr::summarize(count= sum(assoc.first), total= n(), prop= mean(assoc.first)) %>% 
+          arrange(new.dyad)
+  
+         # plot proportion of new and familiar dyads following predicted sequence
+          # get binomial 95% CIs on proportions 
+        # familiar
+        d3_plot$ci.low[1] <- as.numeric(binom.test(x= d3_plot$count[1], n=d3_plot$total[1])$conf.int)[1]
+        d3_plot$ci.high[1] <- as.numeric(binom.test(x= d3_plot$count[1], n=d3_plot$total[1])$conf.int)[2]
+        # stranger
+        d3_plot$ci.low[2] <- as.numeric(binom.test(x= d3_plot$count[2], n=d3_plot$total[2])$conf.int)[1]
+        d3_plot$ci.high[2] <- as.numeric(binom.test(x= d3_plot$count[2], n=d3_plot$total[2])$conf.int)[2]
+         
+        # How often does the pair follow the predicted sequence and does it differ between new and familiar? Here it is below. The error bars are 95% CIs using a binomial test. 
+         d3<-d3 %>%  mutate(af = ifelse(assoc.first==T,1,0),
+                            nd = new.dyad)
+         
+  (pll <- ggplot(data = d3_plot, aes(x=new.dyad, y=prop, color=new.dyad))+
+          geom_point(data = d3_plot, aes(x=new.dyad, y=prop, color=new.dyad),
+                     size=3)+
+          geom_errorbar(data = d3_plot, aes(ymin=ci.low, ymax=ci.high, width=.1),
+                        size=1)+
+          xlab("Relationship type")+
+          ylab("Probability of observing")+
+          ggtitle("(a)") +
+          scale_color_manual(values = c(alpha("#6096F1",1),alpha("#84A632",1))) +
+          scale_x_discrete(labels=c("FALSE" = "Familiar", "TRUE" = "Stranger")) +
+          #ylim(c(0.65,1.0)) + 
+          theme_bw() +
+            theme(text = element_text(size = 12),
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank(),
+                  legend.position="none"#,
+                  #aspect.ratio=1
+                  )+ 
+          geom_jitter(data=d3, aes(x=new.dyad,y=af, color=new.dyad, alpha = nd), 
+                    width = 0.2, height = 0, size =2) +
+          scale_alpha_manual(values = c(0.5, 0.5))
+           )
+
+# fit model
+fit1 <-
+  brm(as.numeric(assoc.first) ~ 
+      new.dyad + 
+      (1|mm(id1,id2)), # block effect; two random effects applied to it simultaneously
+      data = d3, 
+      family = 'bernoulli', 
+      chains = 4,
+      iter = 8000,
+      warmup = 4000)
+
+#install.packages("broom.mixed")
+library(broom.mixed)   
+tidy(fit1, effects = "fixed") 
+
+round(exp(1.22),2)
+
+# check model
+plot(fit1)
+
+
+# These plots help you assess how well the Markov Chain Monte Carlo (MCMC) sampling process worked and whether there are any issues in your model
+pairs(fit1) # scatter plot of matrices
+
+# posterior predictive check 
+(c2<-pp_check(fit1, ndraws=100) +
+    theme(aspect.ratio=1)
+    )
+
+summary(fit1)
+VarCorr(fit1) 
+
+
+# plot model results with 95% Bayesian Credible interval
+# estimate
+fit1 %>% 
+  fixef() %>% 
+  as_tibble(rownames= 'term') %>% 
+  filter(term!= "Intercept") %>% 
+  mutate(label= "Unfamiliarity") %>% 
+  ggplot(aes(x=Estimate, y=label))+
+  geom_point(size=2)+
+  geom_errorbarh(aes(xmin= Q2.5, xmax= Q97.5), height=0.1)+
+  geom_vline(xintercept = 0)
+
+# plot posterior distribution
+# This grey distribution shows the Bayesian posterior probability for the effect of pair unfamiliarity (new dyad = TRUE/FALSE) on the pair outcome (predicted sequence = TRUE/FALSE) after "controlling for" the effect of both bird identities. 
+(p1 <- fit1 %>%
+    spread_draws(b_new.dyadTRUE) %>%
+    mutate(label = "New relationship") %>%
+    ggplot(aes(y = label, x = b_new.dyadTRUE, colour = "#3D348B")) +
+    stat_halfeye(.width = c(0.95), linewidth= 5, size=10, fill = "#CCCCCC") +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    ylab("") +
+    xlab("Effect of relationship type (log odds)") +#\n
+    ggtitle("(b)") +
+    #xlab("Effect of unfamiliarity (log odds) \non association before affiliation") +
+    scale_color_manual(values=c("#3D348B")) +
+    theme_bw() +
+    theme(text = element_text(size = 12),
+          axis.text.y = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position="none"#,
+         # aspect.ratio=1
+          ) 
+  )
+
+
+# now get expected probability from null model
+# include unfamiliar and familiar dyads
+perms <-1000
+exp_fit1 <-rep(NA, perms) 
+
+# progress bar
+pb = txtProgressBar(min = 1, max = perms, style = 3) 
+
+set.seed(123)
+# permutations
+for (i in 1:perms) {
+  setTxtProgressBar(pb,i) # update progress bar
+  d1rand <- 
+   d %>% 
+    # shuffle events within dyad. 
+    group_by(dyad, behavior) %>% # if i don't group by behavior here, there is the possibility that the same behavior more than once can occur within the same sample; check below
+    mutate(sample = if(n() == 1) sample else sample(sample, n())) %>% # delete 1 after sample
+    ungroup() %>% 
+  
+    # get actual events
+    filter(n==1) %>% 
+    # classify behaviors as association or interaction (touch)
+    mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+    # get first case of each behavior within each dyad
+    group_by(dyad, behav) %>% 
+    summarize(first.time = min(sample), .groups= 'drop') %>% 
+    pivot_wider(names_from = behav, values_from = first.time) %>% 
+    mutate(assoc.first = case_when(
+      associate < touch ~ TRUE,
+      associate > touch ~ FALSE,
+      associate == touch ~ NA,
+      is.na(associate) & !is.na(touch) ~ FALSE,
+      !is.na(associate) & is.na(touch) ~ TRUE,
+       TRUE ~ NA))
+ 
+
+  # what is probability that assoc comes first?
+  #exp[i] <- sum(d1rand$assoc.first, na.rm=T) 
+  exp_fit1[i] <- mean(d1rand$assoc.first, na.rm=T)
+
+
+}
+
+
+#### Extract conditional_effects (conditional probabilities) from model
+probs1 <- 
+  conditional_effects(fit1, effects = "new.dyad")$new.dyad %>% 
+  select(new.dyad, estimate= estimate__, low95= lower__, high95= upper__) %>% 
+  mutate(new =ifelse(as.logical(new.dyad), "Unfamiliar", "Familiar"))
+probs1
+
+#### plot probabilities
+(fit_probs_gen_v1 <- probs1 %>% 
+  ggplot(aes(x=new, y=estimate))+
+    geom_point(size=4)+
+    geom_errorbar(aes(ymin=low95, ymax=high95, width=.1), size=1)+
+    #geom_smooth(method= "lm")+
+  # get expected probability from permutations
+  geom_hline(yintercept = mean(exp), color= "#4848D6", size = 1.2)+
+  ylab("Predicted probability of \nGeneralized Sequence")+
+  xlab("Relationship type")+
+  theme_bw()+
+  theme(axis.text.x = element_text(size = 12)))
+
+#### alternate version of plot
+fitted_samples1 <- fitted(fit1, 
+                         newdata = data.frame(
+                           new.dyad = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                           id1 = NA, id2= NA
+                         ),
+                         summary = FALSE) %>% 
+  as.data.frame() %>%
+  setNames(c("Familiar", "Unfamiliar")) %>%
+  mutate(draw = row_number()) %>%
+  pivot_longer(cols = c(Familiar, Unfamiliar), 
+               names_to = "Relationship_status", 
+               values_to = "prob") 
+
+#### Plot fitted probabilities
+(fit_probs_gen_v2 <- ggplot(fitted_samples1, aes(x = prob, fill = Relationship_status)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_manual(values = c(alpha("#6096F1",1),alpha("#84A632",1))) +
+  labs(title = "Generalized Sequence",
+       x = "Predicted probability",
+       y = "Density") +
+  geom_vline(xintercept= mean(exp_fit1), linetype= "dashed", size = 1, color = "#1E1A45")+  
+  theme_bw() +
+  theme(legend.position = "inside",
+          legend.position.inside = c(0.2,0.7)))
+```
+# save/read model
+```{r}
+# save model 
+saveRDS(fit1, "model_TTW_FL_TEST3.rds")
+fit1<-readRDS("model_TTW_FL_TEST3.rds")
+```
+# save model check plots
+```{r, }
+
+pdf("./Supplemental_modelfitting_Test3_chains.pdf", height=5,width=8)
+plot.new() 
+plot(fit1)
+dev.off()
+
+pdf("./Supplemental_modelfitting_Test3_ppcheck.pdf", height=3,width=3)
+c2
+dev.off()
+```
+# plot model results
+```{r, fig.height=4, fig.width=7}
+# add title "generalized sequence"
+tgrob <- text_grob("Generalized sequence",size = 14)
+# Draw the text
+plot_0 <- as_ggplot(tgrob) + theme(plot.margin = margin(0,3,0,0, "cm"))
+# combine
+supp_mat_model3results<-ggarrange(plot_0,NULL,pll, p1,
+          ncol = 2,nrow = 2,heights = c(1,5))
+# save plot
+ggsave("supp_mat_model3results.pdf",supp_mat_model3results, height = 3, width = 7)
+
+# save plot
+ggsave(
+  "fit_probs_gen_v1.pdf",
+  plot = fit_probs_gen_v1,
+  scale = 1,
+  width = 4,
+  height = 3,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300)
+
+# save plot
+ggsave(
+  "fit_probs_gen_v2.pdf",
+  plot = fit_probs_gen_v2,
+  scale = 1,
+  width = 4,
+  height = 3,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300)
+```
+# Does predicted sequence occur more often in new dyads than familiar ones? --------------------------
+```{r}
+# fit Bayesian multi-membership model
+# get data
+d4 <- 
+  d %>% 
+  # get actual events
+  filter(n==1) %>% 
+  # classify behaviors as A, B, or C
+  mutate(behav= case_when(
+    behavior == "NN" ~ "A",
+    behavior == "s2s" ~ "B",
+    behavior == "allop" ~ "B",
+    behavior == "beak_touch" ~ "B",
+    behavior == "alloF" ~ "C",
+    behavior == "cop" ~ "C",
+    TRUE ~ "error")) %>% 
+  # get first case of each behavior within each dyad
+  group_by(new.dyad, dyad, behav) %>% 
+  summarize(first.time = min(sample), .groups= 'drop') %>% 
+  pivot_wider(names_from = behav, values_from = first.time) %>% 
+  # get predicted sequence
+  mutate(ABC= case_when(
+    # the predicted sequence is A then B then C
+    A < B & B < C ~ TRUE,
+    # A then B then C never happened
+    A < B & is.na(C) ~ TRUE,
+    # A but never B and C
+    !is.na(A) & is.na(B) & is.na(C) ~ TRUE,
+    # A then B + C at same time
+    A < B & B == C ~ TRUE,
+    # anything else is FALSE
+    TRUE ~ FALSE)) %>% 
+  separate(dyad, into= c('id1', 'id2')) %>% 
+  select(new.dyad, id1, id2, ABC)
+
+        d4_plot <- d4 %>% 
+          group_by(new.dyad)  %>% 
+          summarize(count= sum(ABC), total= n(), prop= mean(ABC)) %>% 
+          arrange(new.dyad)
+        
+         # plot proportion of new and familiar dyads following predicted sequence
+          # get binomial 95% CIs on proportions 
+        # familiar
+        d4_plot$ci.low[1] <- as.numeric(binom.test(x= d4_plot$count[1], n=d4_plot$total[1])$conf.int)[1]
+        d4_plot$ci.high[1] <- as.numeric(binom.test(x= d4_plot$count[1], n=d4_plot$total[1])$conf.int)[2]
+        # stranger
+        d4_plot$ci.low[2] <- as.numeric(binom.test(x= d4_plot$count[2], n=d4_plot$total[2])$conf.int)[1]
+        d4_plot$ci.high[2] <- as.numeric(binom.test(x= d4_plot$count[2], n=d4_plot$total[2])$conf.int)[2]
+         
+        # How often does the pair follow the predicted sequence and does it differ between new and familiar? Here it is below. The error bars are 95% CIs using a binomial test. 
+        d4<-d4 %>%  mutate(af = ifelse(ABC==T,1,0),
+                            nd = new.dyad)
+        (pl <- ggplot(data=d4_plot, aes(x=new.dyad, y=prop, color=new.dyad))+
+          geom_point(data=d4_plot, aes(x=new.dyad, y=prop, color=new.dyad),size=3)+
+          geom_errorbar(data=d4_plot,aes(ymin=ci.low, ymax=ci.high, width=.1), size=1)+
+          xlab("Relationship type")+
+          ylab("Probability of observing")+
+            ggtitle("(a)")+
+          #ylab("Proportion following \npredicted sequence")+
+          scale_color_manual(values = c(alpha("#6096F1",1),alpha("#84A632",1))) +
+          scale_x_discrete(labels=c("FALSE" = "Familiar", "TRUE" = "Stranger")) +
+          #ylim(c(0.65,1.0)) + 
+          theme_bw() +
+            theme(text = element_text(size = 12),
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank(),
+                  legend.position="none"#,
+                  #aspect.ratio=1
+                  )+ 
+          geom_jitter(data=d4, aes(x=new.dyad,y=af, color=new.dyad, alpha = nd), 
+                    width = 0.2, height = 0, size =2) +
+          scale_alpha_manual(values = c(0.5, 0.5))
+        )
+        
+      
+# fit model
+fit2 <-
+  brm(as.numeric(ABC) ~ 
+        new.dyad + 
+        (1|mm(id1,id2)), 
+      data = d4, 
+      family = 'bernoulli', 
+      chains = 4,
+      iter = 8000,
+      warmup = 4000)
+
+# check model
+(c3<-plot(fit2)+
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          aspect.ratio=1)
+  )
+
+# posterior predictive check 
+(c4<-pp_check(fit2, ndraws=100)+
+    theme(
+          aspect.ratio=1)
+  )
+
+
+summary(fit2)
+round(exp(1.06),2)
+
+# plot model results with 95% Bayesian Credible interval
+# estimate
+fit2 %>% 
+  fixef() %>% 
+  as_tibble(rownames= 'term') %>% 
+  filter(term!= "Intercept") %>% 
+  mutate(label= "Unfamiliarity") %>% 
+  ggplot(aes(x=Estimate, y=label))+
+  geom_point(size=2)+
+  geom_errorbarh(aes(xmin= Q2.5, xmax= Q97.5), height=0.1)+
+  geom_vline(xintercept = 0)
+
+# plot posterior distribution
+# This grey distribution shows the Bayesian posterior probability for the effect of pair unfamiliarity (new dyad = TRUE/FALSE) on the pair outcome (predicted sequence = TRUE/FALSE) after "controlling for" the effect of both bird identities. 
+(p2 <- fit2 %>%
+    spread_draws(b_new.dyadTRUE) %>%
+    mutate(label = "New relationship") %>%
+    ggplot(aes(y = label, x = b_new.dyadTRUE, colour = "#3D348B")) +
+    stat_halfeye(.width = c(0.95), linewidth= 5, size=10, fill = "#CCCCCC") +
+    geom_vline(xintercept = 0, linetype = "dashed")+
+    ylab("")+
+    ggtitle("(b)")+
+    xlab("Effect of relationship type (log odds)")+#\n
+    #xlab("Effect of unfamiliarity (log odds) \non predicted sequence")+
+    scale_color_manual(values=c("#3D348B")) +
+    theme_bw() +
+    theme(text = element_text(size = 12),
+          axis.text.y = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position="none"#,
+          #aspect.ratio=1
+          )
+) 
+
+
+# now get expected probability from null model
+# stranger and familiar dyads
+perms <-1000
+exp2_fit2 <-rep(NA, perms) 
+
+# progress bar
+pb = txtProgressBar(min = 1, max = perms, style = 3) 
+
+set.seed(123)
+# permutations
+for (i in 1:perms) {
+   setTxtProgressBar(pb,i) # update progress bar
+  
+  d2rand <- 
+    d %>% 
+    # shuffle times within dyad
+    group_by(dyad, behavior) %>% 
+    mutate(sample = if(n() == 1) sample else sample(sample, n())) %>% 
+    ungroup() %>% 
+    
+    # get actual events
+    filter(n==1) %>% 
+    # classify behaviors as A, B, or C
+    mutate(behav= case_when(
+      behavior == "NN" ~ "A",
+      behavior == "s2s" ~ "B",
+      behavior == "allop" ~ "B",
+      behavior == "beak_touch" ~ "B",
+      behavior == "alloF" ~ "C",
+      behavior == "cop" ~ "C",
+      TRUE ~ "error")) %>% 
+    
+    # get first case of each behavior within each dyad
+    group_by(dyad, behav) %>% 
+    summarize(first.time = min(sample), .groups= 'drop') %>% 
+    pivot_wider(names_from = behav, values_from = first.time) %>% 
+    # get predicted sequence
+    mutate(ABC= case_when(
+      # the predicted sequence is A then B then C
+      A < B & B < C ~ TRUE,
+      # A then B then C never happened
+      A < B & is.na(C) ~ TRUE,
+      # A but never B and C
+      !is.na(A) & is.na(B) & is.na(C) ~ TRUE,
+      # A then B + C at same time
+      A < B & B == C ~ TRUE,
+      # anything else is FALSE
+      TRUE ~ FALSE)) 
+  
+  # what is probability that assoc comes first?
+  exp2_fit2[i] <- mean(d2rand$ABC)
+  #exp2[i] <- sum(d2rand$ABC, na.rm=T)
+}
+
+#### Extract conditional_effects (conditional probabilities) from model
+probs2 <- 
+  conditional_effects(fit2, effects = "new.dyad")$new.dyad %>% 
+  select(new.dyad, estimate= estimate__, low95= lower__, high95= upper__) %>% 
+  mutate(new =ifelse(as.logical(new.dyad), "Unfamiliar", "Familiar"))
+probs2
+
+#### plot probabilities
+(fit_probs_pre_v1 <- probs2 %>% 
+  ggplot(aes(x=new, y=estimate))+
+    geom_point(size=4)+
+    geom_errorbar(aes(ymin=low95, ymax=high95, width=.1), size=1)+
+  #  geom_smooth(method= "lm")+
+  # get expected probability from permutations
+  geom_hline(yintercept = mean(exp2), color= "#4848D6", size = 1.2)+
+  ylab("Predicted probability of \nPrecise Sequence")+
+  xlab("Relationship type")+
+  theme_bw()+
+  theme(axis.text.x = element_text(size = 12)))
+
+#### alternate version of plot
+fitted_samples2 <- fitted(fit2, 
+                         newdata = data.frame(
+                           new.dyad = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                           id1 = NA, id2= NA
+                         ),
+                         summary = FALSE) %>% 
+  as.data.frame() %>%
+  setNames(c("Familiar", "Unfamiliar")) %>%
+  mutate(draw = row_number()) %>%
+  pivot_longer(cols = c(Familiar, Unfamiliar), 
+               names_to = "Relationship_status", 
+               values_to = "prob") 
+
+#### Plot fitted probabilities
+(fit_probs_pre_v2 <- ggplot(fitted_samples2, aes(x = prob, fill = Relationship_status)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_manual(values = c(alpha("#6096F1",1),alpha("#84A632",1))) +
+  labs(title = "Precise Sequence",
+       x = "Predicted probability",
+       y = "Density") +
+  geom_vline(xintercept= mean(exp2_fit2), linetype= "dashed", size = 1, color = "#1E1A45")+  
+  theme_bw() +
+  theme(legend.position = "none",
+          legend.position.inside = c(0.2,0.7)))
+
+
+
+```
+# save/read model
+```{r}
+# save model 
+saveRDS(fit2, "model_TTW_FL_TEST4.rds")
+fit2<-readRDS("model_TTW_FL_TEST4.rds")
+```
+# plot model checks
+```{r}
+
+pdf("./Supplemental_modelfitting_Test4_chains.pdf", height=5,width=8)
+plot.new() 
+plot(fit2)
+dev.off()
+
+pdf("./Supplemental_modelfitting_Test4_ppcheck.pdf", height=3,width=3)
+c4
+dev.off()
+```
+# plot model results
+```{r, fig.height=4, fig.width=7}
+# add title "generalized sequence"
+ttgrob <- text_grob("Precise sequence",size = 14)
+# Draw the text
+plot_1 <- as_ggplot(ttgrob) + theme(plot.margin = margin(0,3,0,0, "cm"))
+# combine
+
+supp_mat_model4results<-ggarrange(plot_1,NULL,pl, p2,
+          ncol = 2,nrow = 2,heights = c(1,5))
+
+# save plot
+ggsave("supp_mat_model4results.pdf", height = 3, width = 7)
+
+# save plot
+ggsave(
+  "fit_probs_pre_v1.pdf",
+  plot = fit_probs_pre_v1,
+  scale = 1,
+  width = 4,
+  height = 3,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300)
+
+# save plot
+ggsave(
+  "fit_probs_pre_v2.pdf",
+  plot = fit_probs_pre_v2,
+  scale = 1,
+  width = 4,
+  height = 3,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300)
+```
+# proximty associations before contact between strangers
+Testing the waters predicts that animals should approach and maintain no-contact proximity on multiple occasions (or for prolonged periods) before touching becomes common. 
+
+To determine whether strangers maintain proximity with preferred partners before contact, we compared strangers’ mean proximity association rates leading up to their first contact interaction to their rates with all other birds that were never observed in contact within the same observation period.   
+```{r}
+# identify all five minute timebins during experiment and id hour of exp. 
+hrs <- possible %>%
+  mutate(date = as.Date(sample),
+         hour = hour(sample)) %>% 
+  distinct(date, hour) %>% 
+  arrange(date, hour) %>% 
+  mutate(total.hour = row_number())
+
+
+# identify first contact interaction and merge with hour of experiment 
+tch <- actual %>% 
+ mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+  filter(behav == "touch") %>% # filter contact interactions 
+  group_by(dyad) %>% 
+  summarize(first.touch = min(sample), .groups= 'drop') %>% 
+  mutate(date = as.Date(first.touch),
+         hour = hour(first.touch),
+         new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)]) %>% 
+  filter(new.dyad == T) %>%  # strangers only
+  left_join(hrs, by=c("date", "hour")) %>% 
+  select(dyad, total.hour) %>% 
+  rename(first.hour = total.hour) %>% ungroup()
+
+# calculate the proportion of samples dyads were observed associating/interacting of all samples in which the dyad could have interacted in an hour (could have been observed during observation hours) 
+NN_dat <- rbind(actual, possible) %>% 
+  mutate(behv = "associate", # all behaviors require proximity
+         sample = lubridate::ymd_hms(sample)) %>% 
+  select(-behavior)%>%
+  distinct() %>% 
+  arrange(dyad, sample) %>%
+  group_by(dyad, sample, behv) %>% 
+  summarize(n= sum(n), .groups = "drop") %>%  # this combines actual and possible samples
+  mutate(date = as.Date(sample),
+         hour = hour(sample),
+         new.dyad= dyads$new.dyad[match(.$dyad, dyads$undir.dyad)]) %>% 
+  filter(new.dyad == T) %>%  # strangers only
+  left_join(hrs, by=c("date", "hour")) %>% # observation hours during exp.
+  group_by(total.hour, dyad) %>% 
+  mutate(tot.pos = n(), # possible interaction per hour
+         tot.obs = sum(n), # observed association per hour
+         rate_t = tot.obs/tot.pos) %>%   
+  ungroup() %>% 
+  merge(tch, by="dyad", all.x = T) %>% # first contact interaction 
+  mutate(touch = ifelse(is.na(first.hour) == F, "Contact", "No contact")) %>% 
+  select(-sample) %>% distinct()
+ 
+# birdID
+bID <-unique(c(raw$actor))
+
+# for every bird , we pulled their associations with strangers they were observed in contact with (before the contact occurred)
+# create empty df to write data to
+contact.dat <-data.frame()
+i=1
+for(i in 1:length(bID)){
+  # focal data
+  focal <- NN_dat %>% 
+    mutate(dyad1 = dyad) %>% 
+    separate(dyad1, c("A", "B"))  %>%
+    dplyr::filter(touch == "Contact") %>% # filter no contact data
+    filter(A == bID[i] | # focal bird were either A or B (bc interactions are undirected)
+           B == bID[i]) %>%
+    filter(total.hour <= first.hour) %>%  # associations that occurred before contact
+    mutate(focal = bID[i]) # add focal ID
+  # combine df
+  contact.dat <- rbind.data.frame(contact.dat, focal)
+}
+
+      contact.dat %>% 
+       filter(focal == "BBP")
+      
+      contact.dat %>% 
+       filter(focal == "OBB")  
+
+# pull associations that occurred before dyads first contact 
+#contact.dat <-  NN_dat %>% 
+#  mutate(dyad1 = dyad) %>% 
+#  separate(dyad1, c("A", "B"))  %>%
+#  filter(touch == "Contact") %>% # dyads that progressed
+#  rowwise() %>% 
+#  filter(total.hour <= first.hour) %>%  # associations that occurred before contact
+#  ungroup() 
+
+         # plot
+        contact.dat %>% #filter(A == "PBB") %>% 
+         ggplot(aes(x=total.hour, y=rate_t, color = B)) +
+          geom_jitter() +
+          geom_line() +
+          xlab("observation hour")+
+          ylab("proportion of samples") +
+          theme(text = element_text(size = 11),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                legend.position="none") +
+          facet_wrap(~focal)
+
+# identify last first hour of contact as cut off for dyads with no contact
+dat.hour <- contact.dat %>% group_by(focal) %>% 
+  summarize(last.first.contact = max(first.hour))
+
+# for each bird who was in contact with another, find all of their associations with 
+# birds with whom they were not in contact with 
+ctID<-unique(c(contact.dat$A, contact.dat$B))
+
+# create empty df to write data to
+no_contact.dat <-data.frame()
+i=1
+for(i in 1:length(ctID)){
+  # focal data
+  focal <- NN_dat %>% 
+    mutate(dyad1 = dyad) %>% 
+    separate(dyad1, c("A", "B"))  %>%
+    dplyr::filter(touch == "No contact") %>% # filter no contact data
+    filter(A == ctID[i] | # focal bird were either A or B (bc interactions are undirected)
+           B == ctID[i]) %>%
+    filter(total.hour <= dat.hour$last.first.contact[i]) %>% # contact cut off
+    mutate(focal = ctID[i]) # add focal ID
+  # combine df
+  no_contact.dat <- rbind.data.frame(no_contact.dat, focal)
+}
+
+# summarize associations: individual's average association rate with all their contact partners
+ct.sum <- contact.dat %>% 
+  # first summarize each dyads average hourly association rate
+  group_by(touch,A,B,focal) %>% 
+  summarize(mean.rate = mean(rate_t),.groups = 'drop') %>%
+  # then find mean association rate for each bird across all of its contact partners
+  group_by(touch,focal) %>% 
+  summarize(mean.rate = mean(mean.rate),.groups = 'drop') 
+
+# summarize associations: individual's average association rate with all their non-contact partners
+no_ct.sum <- no_contact.dat %>%
+  # first summarize each dyads average hourly association rate
+  group_by(touch,A,B,focal) %>% 
+  summarize(mean.rate = mean(rate_t),.groups = 'drop') %>% 
+   # then find mean association rate for each bird across all of its non-contact partners
+  group_by(touch,focal) %>% 
+  summarize(mean.rate = mean(mean.rate),.groups = 'drop') 
+
+
+      # define non-parametric paired t-test function
+      ## permutation
+      ## x is the differences between the paired observations ()
+      ppt.test <- function(x){
+        perms=5000
+        n <- length(x)
+        obs <- t.test(x)$statistic
+        exp <- rep(NA, perms)
+        for (i in 1:perms) {
+          exp[i] <- t.test(x * sample(c(-1, 1), n, replace = TRUE))$statistic
+        }
+        p <- mean(abs(obs)<abs(exp))
+        out=ifelse(p==0,"P<0.0001",p)
+        #ob=abs(obs)
+        out
+       # ob
+      }
+
+# run non-parametric paired t-test 
+## difference between paired values
+set.seed(123)
+ttest <- ppt.test(ct.sum$mean.rate - no_ct.sum$mean.rate)
+ttest
+
+touch.dat %>% 
+   group_by(touch) %>% 
+   summarize(n = n(),
+             mean = round(mean(mean.rate),2),
+             sd = round(sd(mean.rate),2))
+ 
+
+# combine dfs for plotting
+touch.dat <- rbind.data.frame(ct.sum, no_ct.sum)
+
+# plot
+(paired_NN <- ggplot(touch.dat, aes(x = touch, y = mean.rate)) +
+  geom_line(aes(group = focal), alpha = 0.6) +
+  geom_point(aes(color = touch), size = 3) +
+  theme(legend.position = "bottom") +
+  xlab("Relationship progression")+
+  ylab("Mean association rate")+
+  ggtitle("(c)")+
+  scale_color_manual(values = c(alpha("#4E6A08",.9),alpha("#84A632",.5))) +
+  scale_x_discrete(labels=c("Contact" = "With \ncontact", "No contact" = "Without \ncontact")) +
+  annotate("text", x = 2, y = 0.08, label = ttest, size = 5)+
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        axis.title.x = element_text(size = 13),
+        axis.title.y = element_text(size = 13),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position="none"
+        ))
+
+ # save plot
+ggsave(
+  "paired_NN.pdf",
+  plot = paired_NN,
+  scale = 1,
+  width = 6,
+  height = 3,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300)
+
+```
+# Does nearest-neighbor association precede physical contact more than expected by chance?
+To simulate the **null hypothesis that the type of behavior has no impact on which comes first, I permuted the behavior times** across behavior types  within each pair. As an observed statistic, I calculated the frequency that the first nearest neighbor behavior (proximity) happens before touching.
+
+Here I am using df with "unobserved" interactions (non-events that could have taken place but did not). By adding zeros/non-events, we have to either reshuffle the 0/1 or the times *within behaviors*.
+
+This method should fix my "sampling problem" where reshuffling in any given iteration may result an simultaneous events of the same behavior because in this reference model every behavior could be reshuffled to every single time slot.
+
+To accomplish this, I grouped by dyad and behavior before shuffling. I think this should allow for the possibility that each behavior could occur at every round.dt. 
+
+```{r}
+d1 <- 
+  d %>% 
+  # get new dyads
+  filter(new.dyad) %>% 
+  # get actual events
+  filter(n==1) %>% 
+  # classify behaviors as association or interaction (touch)
+  mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+  # get first case of each behavior within each dyad
+  group_by(dyad, behav) %>% 
+  summarize(first.time = min(sample), .groups= 'drop') %>% 
+  pivot_wider(names_from = behav, values_from = first.time) %>% 
+  mutate(assoc.first = case_when(
+    # it counts when a dyad is seen associating before touching
+    associate < touch ~ TRUE,
+    # does not count when the opposite is true
+    associate > touch ~ FALSE,
+    # if first associate and first touch are observed in same 5-min bin this does not support or reject
+    associate == touch ~ NA,# UPDATED RULE FROM LAST VERSION  
+    is.na(associate) & !is.na(touch) ~ FALSE,
+    !is.na(associate) & is.na(touch) ~ TRUE,
+    TRUE ~ NA))
+      
+    unique(d1$assoc.first)
+    length(unique(d1$dyad))
+    d %>% 
+      # get new dyads
+      filter(new.dyad) %>% 
+      # get actual events
+      filter(n==1) %>% 
+      # classify behaviors as association or interaction (touch)
+      mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+      # get first case of each behavior within each dyad
+      group_by(dyad, behav) %>% 
+      summarize(first.time = min(sample), .groups= 'drop')  %>% ungroup() %>% 
+      group_by(dyad) %>% 
+          summarize(n = n_distinct(behav)) %>% ungroup() %>% 
+     filter(n>1)
+      
+
+# what is probability that assoc comes first?
+obs <- mean(d1$assoc.first, na.rm=T) 
+
+# how many dyads were observed progressing
+#obs <- sum(d1$assoc.first, na.rm=T)
+
+# now get expected probability from null model
+perms <-1000
+exp <-rep(NA, perms) 
+
+# progress bar
+pb = txtProgressBar(min = 1, max = perms, style = 3) 
+
+set.seed(123)
+# permutations
+for (i in 1:perms) {
+  setTxtProgressBar(pb,i) # update progress bar
+  
+  d1rand <- 
+   d %>% 
+    # get new dyads
+    filter(new.dyad) %>% 
+    
+    # shuffle events within dyad. 
+    group_by(dyad, behavior) %>% # if i don't group by behavior here, there is the possibility that the same behavior more than once can occur within the same sample; check below
+    mutate(sample = if(n() == 1) sample else sample(sample, n())) %>% # delete 1 after sample
+    ungroup() %>% 
+  
+    # get actual events
+    filter(n==1) %>% 
+    # classify behaviors as association or interaction (touch)
+    mutate(behav= ifelse(behavior== "NN", "associate", "touch")) %>% 
+    # get first case of each behavior within each dyad
+    group_by(dyad, behav) %>% 
+    summarize(first.time = min(sample), .groups= 'drop') %>% 
+    pivot_wider(names_from = behav, values_from = first.time) %>% 
+    mutate(assoc.first = case_when(
+      associate < touch ~ TRUE,
+      associate > touch ~ FALSE,
+      associate == touch ~ NA,
+      is.na(associate) & !is.na(touch) ~ FALSE,
+      !is.na(associate) & is.na(touch) ~ TRUE,
+       TRUE ~ NA))
+ 
+
+  # what is probability that assoc comes first?
+  #exp[i] <- sum(d1rand$assoc.first, na.rm=T) 
+  exp[i] <- mean(d1rand$assoc.first, na.rm=T)
+
+
+}
+
+# function to plot permutation test results----
+hist_perm <- function(exp=exp, obs=obs, perms=perms, label=''){
+  exp.range <- signif(quantile(exp, probs= c(0.025, 0.975)),3)
+  ggplot()+
+    geom_histogram(aes(x=exp), color="black",fill="light blue")+
+    geom_vline(aes(xintercept=obs), color="red", linewidth=1)+
+    geom_vline(aes(xintercept=exp.range[1]), color="black", linewidth=1, linetype = 2)+
+    geom_vline(aes(xintercept=exp.range[2]), color="black", linewidth=1, linetype = 2)+
+    xlab("expected values from null model")+
+    theme_bw() +
+   ggtitle(label, subtitle = paste('obs = ',signif(obs,3), ', exp 95% CI= ', exp.range[1], ' to ', exp.range[2], ", Prob exp >= obs: p", ifelse(mean(exp>=obs)==0,paste("<",1/perms), paste("=",signif(mean(exp>=obs),digits=2))),", permutations=",perms, sep=""))
+}
+
+# plot
+(plot1 <- hist_perm(exp, obs, perms= perms, label= "First proximity precede first touching more than expected by chance"))
+
+# checking for unique behaviors within sample
+#d1rand %>% 
+  #group_by(dyad, sample1, behavior) %>% 
+  #summarize(n =sum(n)) %>% ungroup() %>% 
+  #distinct(n)
+
+library(beanplot)
+#par(cex.lab=1.5) # size for y-axis labels
+#par(cex.axis=1.5) # size for x-axis labels
+par(mar=c(1,5,1,1)) # margins
+beanplot(exp,
+         what = c(0,1,0,0), # the total average line, the beans, the bean average, and the beanlines
+         #beanlines = "median",
+         method = "overplot",
+         col = "grey", border = "grey",
+         maxwidth = .5, # maximum width of a bean
+         maxstripline = .5,
+        # ll = .01, # the length of the beanline per point found
+         ylim = c(.7,1),
+         #at = c(.75, 1.75, 2.75)
+         ylab = "probability proximity precedes \naffiliative contact" 
+         )
+abline(h = obs, col = "#4E6A08",lwd = 3)
+#legend("bottomright", bty="n",c("Ascorbic acid", "Orange juice"),
+ #      fill = c("yellow", "orange"))
+# expression(paste("assortativity coefficient (",italic("r"[a]), ")"))
+
+```
+# Categorize behaviors as early (A), mid (B), and late (C)--------------
+Does A->B->C occur more than expected by chance?
+A  (nearest neighbor)
+B  (shoulder-shoulder, allopreening, beak touch)
+C  (allofeed and copulate)
+
+The prediction is that A should come before B and B should come before C. This is a bit more complex than 2 categories. 
+
+If the pair does A, then B, then C, then this order clearly matches predictions = TRUE
+If pair does A then B and never C then I think that also matches = TRUE
+If pair only does A  and has yet to do B or C I think that also matches = TRUE 
+However, if a B or C precedes A then this is predicted match= FALSE
+The question is whether this predicted sequence (testing the waters) outcome happens more than expected from the null model (given the frequency of occurrence).
+```{r}
+# get first times for each type of behavior
+d2 <- 
+  d %>% 
+  # get new dyads
+  filter(new.dyad) %>% 
+  # get actual events
+  filter(n==1) %>% 
+  # classify behaviors as A, B, or C
+  mutate(behav= case_when(
+    behavior == "NN" ~ "A",
+    behavior == "s2s" ~ "B",
+    behavior == "allop" ~ "B",
+    behavior == "beak_touch" ~ "B",
+    behavior == "alloF" ~ "C",
+    behavior == "cop" ~ "C",
+    TRUE ~ "error")) %>%
+  # get first case of each behavior within each dyad
+  group_by(dyad, behav) %>% 
+  summarize(first.time = min(sample), .groups= 'drop') %>% 
+  pivot_wider(names_from = behav, values_from = first.time) %>% 
+  # get predicted sequence
+  mutate(ABC= case_when(
+    # the predicted sequence is A then B then C
+    A < B & B < C ~ TRUE,
+    # A then B then C never happened
+    A < B & is.na(C) ~ TRUE,
+    # A but never B and C
+    !is.na(A) & is.na(B) & is.na(C) ~ TRUE, 
+    # A then B + C at same time
+    A < B & B == C ~ TRUE,
+    # anything else is FALSE
+    TRUE ~ FALSE)) 
+
+# what is probability of the predicted sequence ABC
+obs2 <- mean(d2$ABC, na.rm=T)
+obs2 <- #sum(d2$ABC, na.rm=T) 
+obs2
+
+# now get expected probability from null model
+perms <-1000
+exp2 <-rep(NA, perms) 
+
+# progress bar
+pb = txtProgressBar(min = 1, max = perms, style = 3) 
+
+set.seed(123)
+# permutations
+for (i in 1:perms) {
+   setTxtProgressBar(pb,i) # update progress bar
+  
+  d2rand <- 
+    d %>% 
+    # get new dyads
+    filter(new.dyad) %>% 
+    
+    # shuffle times within dyad
+    group_by(dyad, behavior) %>% 
+    mutate(sample = if(n() == 1) sample else sample(sample, n())) %>% 
+    ungroup() %>% 
+    
+    # get actual events
+    filter(n==1) %>% 
+    # classify behaviors as A, B, or C
+    mutate(behav= case_when(
+      behavior == "NN" ~ "A",
+      behavior == "s2s" ~ "B",
+      behavior == "allop" ~ "B",
+      behavior == "beak_touch" ~ "B",
+      behavior == "alloF" ~ "C",
+      behavior == "cop" ~ "C",
+      TRUE ~ "error")) %>% 
+    
+    # get first case of each behavior within each dyad
+    group_by(dyad, behav) %>% 
+    summarize(first.time = min(sample), .groups= 'drop') %>% 
+    pivot_wider(names_from = behav, values_from = first.time) %>% 
+    # get predicted sequence
+    mutate(ABC= case_when(
+      # the predicted sequence is A then B then C
+      A < B & B < C ~ TRUE,
+      # A then B then C never happened
+      A < B & is.na(C) ~ TRUE,
+      # A but never B and C
+      !is.na(A) & is.na(B) & is.na(C) ~ TRUE,
+      # A then B + C at same time
+      A < B & B == C ~ TRUE,
+      # anything else is FALSE
+      TRUE ~ FALSE)) 
+  
+  # what is probability that assoc comes first?
+  exp2[i] <- mean(d2rand$ABC)
+  #exp2[i] <- sum(d2rand$ABC, na.rm=T)
+}
+
+# plot 2
+(plot2 <- hist_perm(exp2, obs2, perms= perms, label= "Predicted sequence does not more than expected by chance"))
+
+par(mar=c(1,5,1,1)) # margins
+beanplot(exp2,
+        what = c(0,1,0,0), # the total average line, the beans, the bean average, and the beanlines
+         #beanlines = "median",
+         method = "overplot",
+         col = "grey", border = "grey",
+         maxwidth = .5, # maximum width of a bean
+         maxstripline = .5,
+         #ll = .01, # the length of the beanline per point found
+         ylim = c(.7,1)
+         #at = c(.75, 1.75, 2.75)
+         #ylab = "probability proximity precedes \naffiliative contact" 
+         )
+abline(h = obs2, col = "#4E6A08",lwd = 3)
+```
+# plot combined non-parametric results from stranger dyads
+```{r}
+# function to plot permutation test results----
+bean_perm <- function(exp=exp, obs=obs, perms=perms,
+                      ylab = " ",
+                      xlab = " "
+                      ){
+  exp.range <- signif(quantile(exp, probs= c(0.025, 0.975)),3)
+  par(mar=c(1,5,1,1)) # margins
+  par(pty="s") 
+  beanplot(exp,
+         what = c(0,1,0,0), # the total average line, the beans, the bean average, and the beanlines
+         #beanlines = "median",
+         method = "overplot",
+         col = "grey", border = "grey",
+         maxwidth = .5, # maximum width of a bean
+         maxstripline = .5,
+         #ll = .09, # the length of the beanline per point found
+         ylim = c(.8,1),
+         ylab = ylab,
+         xlab = xlab,
+        cex.lab = 1.15, # axis title text size
+         yaxt = "n" # Suppress default y-axis ticks and labels; THE PLOT AUTOMATICALLY ROTATES YAXIS TICK TEXT VERTICALLY; MANUALLY SET
+
+         )
+axis(side = 2, las = 1, cex.axis = 1) # Add a custom y-axis with horizontal labels
+abline(h = obs, col = "#80AD12",lwd = 4)
+#abline(h = exp.range[1], col = alpha("black",0.7), lwd=3, lty = 3)
+abline(h = exp.range[2], col = alpha("black",0.7), lwd=3, lty = 3)
+
+# Precompute the P-value string
+  p_value <- ifelse(mean(exp >= obs) == 0, 
+                    paste("<", 1/perms), 
+                    paste("=", sprintf('%.2f',mean(exp >= obs))))
+
+  # Add the legend with obs and italicized P-value
+  legend("bottomleft", bty = "n", 
+         legend = c(
+           paste("obs =", sprintf('%.2f',obs)), 
+           bquote(bold(#italic(
+             P
+             #) 
+             ~ .(p_value)))
+         )
+  )
+}
+
+pdf("./Figure3_results_ref.pdf")
+#dev.new(width=20, height=8, unit="in") 
+par(mfrow = c(1,2))
+bean_perm(exp, obs, 
+          ylab = "Probability of observing"
+          )
+mtext("(a) Generalized Sequence", side = 3, line = 1, adj = -.25, cex = 1, font = 2)
+bean_perm(exp2, obs2, 
+          ylab = "Probability of observing"
+          )
+mtext("(b) Precise Sequence", side = 3, line = 1, adj = -.25, cex = 1, font = 2) 
+dev.off()
+```
