@@ -3,7 +3,7 @@
 ## description of files for reproducibility:
 ### TTW_BIOLET.RMD - R markdown file with code to reproduce all analyses and figures
 
-### 2021_TTW.csv - csv file of social interactions
+### 2021_TTW.csv - edgelist of social interactions (includes bird attributes)
 #### columns 
 sessionKEY - date_observerID
 round.dt - rounded date time by five-minute timebin of observation
@@ -21,7 +21,7 @@ undir.dyad - undirected dyad; actor and subject ID ordered alphabetically
 new.dyad = T/F; whether dyad were stranger/familiar
 opp.sex = T/F; whether dyad were different/same sex
 
-### 2021_preperturbation dyad list.csv - csv file of birds during the experiment and all possible combinations of directed and undirected dyads
+### 2021_preperturbation dyad list.csv - list of birds during the experiment and all possible combinations of directed/undirected dyads (indcludes meta data)
 #### columns
 dyadID - directed dyad; actor and subject ID 
 actor - actor bird ID 
